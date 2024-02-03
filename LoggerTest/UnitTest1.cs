@@ -8,7 +8,6 @@ public class Basic
     [TestMethod]
     public void TestHelloWorld()
     {
-        var logger = new Logger();
-        logger.Log("Hello, World!");
+        Log.Information("Hello, World!");
     }
 }
