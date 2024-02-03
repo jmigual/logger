@@ -33,7 +33,7 @@ public abstract class Device
     protected abstract void Notify();
 }
 
-public class StreamDevice(TextWriter writer) : Device
+public class TextDevice(TextWriter writer) : Device
 {
     /// <summary>
     /// Specify the format string for the log message. The default is "{0} [{1}] {2}". Where
@@ -56,11 +56,13 @@ public class StreamDevice(TextWriter writer) : Device
     }
 }
 
-public class ConsoleDevice : StreamDevice
+public class ConsoleDevice : TextDevice
 {
     public ConsoleDevice()
         : base(Console.Error) { }
 }
+
+public class FileDevice(string path) : TextDevice(new StreamWriter(path)) { }
 
 public class Logger
 {
