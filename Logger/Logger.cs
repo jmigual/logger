@@ -1,4 +1,7 @@
-﻿namespace Logger;
+﻿using System.Security.Cryptography;
+using System.Threading.Tasks.Dataflow;
+
+namespace Logger;
 
 public enum Severity
 {
@@ -20,17 +23,14 @@ public abstract class Device
 {
     public Severity MinimumSeverity { get; set; } = Severity.Verbose;
 
-    protected Queue<Message> messages = new Queue<Message>();
-
-    public void Log(Severity severity, string message)
+    public async Task Log(Message message)
     {
-        if (severity < MinimumSeverity)
+        if (message.Severity < MinimumSeverity)
             return;
-        messages.Enqueue(new Message { Severity = severity, Text = message });
-        Notify();
+        await LogInternal(message);
     }
 
-    protected abstract void Notify();
+    protected abstract Task LogInternal(Message message);
 }
 
 public class TextDevice(TextWriter writer) : Device
@@ -43,16 +43,12 @@ public class TextDevice(TextWriter writer) : Device
 
     private readonly TextWriter writer = writer;
 
-    protected override void Notify()
+    protected override async Task LogInternal(Message messageData)
     {
-        while (messages.Count > 0)
-        {
-            var messageData = messages.Dequeue();
-            var message = messageData.Text;
-            var severity = messageData.Severity.ToString();
-            var date = DateTime.Now;
-            writer.WriteLine(string.Format(FormatStr, date, severity, message));
-        }
+        var message = messageData.Text;
+        var severity = messageData.Severity.ToString();
+        var date = DateTime.Now;
+        await writer.WriteLineAsync(string.Format(FormatStr, date, severity, message));
     }
 }
 
@@ -69,12 +65,38 @@ public class Logger
     /// <summary>
     /// Build a logger with no devices. Will not write anything and will discard all messages.
     /// </summary>
-    public Logger() { }
+    public Logger()
+    {
+        processThreadHandle = Task.Run(ProcessThread);
+    }
 
     /// <summary>
     /// Build a logger with the given devices.
     /// </summary>
-    public Logger(IEnumerable<Device> devices) => this.devices.AddRange(devices);
+    public Logger(IEnumerable<Device> devices)
+    {
+        foreach (var device in devices)
+        {
+            AddDevice(device);
+        }
+
+        processThreadHandle = Task.Run(ProcessThread);
+    }
+
+    ~Logger()
+    {
+        processThreadHandle.Wait();
+    }
+
+    public readonly Dictionary<int, Device> Devices = [];
+
+    private readonly BufferBlock<Message> messageQueue = new();
+
+    private readonly Task processThreadHandle;
+
+    private int nextDeviceId = 0;
+
+    public static Logger GetConsoleLogger() => new([new ConsoleDevice()]);
 
     public void Verbose(string message) => Log(Severity.Verbose, message);
 
@@ -88,17 +110,29 @@ public class Logger
 
     public void Log(Severity severity, string message)
     {
-        foreach (var device in devices)
-        {
-            device.Log(severity, message);
-        }
+        messageQueue.Post(new Message { Severity = severity, Text = message });
     }
 
-    public void AddDevice(Device device) => devices.Add(device);
+    public int AddDevice(Device device)
+    {
+        var id = nextDeviceId++;
+        Devices.Add(id, device);
+        return id;
+    }
 
-    public static Logger GetConsoleLogger() => new([new ConsoleDevice()]);
-
-    private readonly List<Device> devices = [];
+    private async void ProcessThread()
+    {
+        Console.WriteLine("Logger process thread started");
+        while (await messageQueue.OutputAvailableAsync())
+        {
+            var message = await messageQueue.ReceiveAsync();
+            foreach (var (_, device) in Devices)
+            {
+                await device.Log(message);
+            }
+        }
+        Console.WriteLine("Logger process thread stopped");
+    }
 }
 
 public class Log
@@ -116,6 +150,19 @@ public class Log
     public static void LogGeneric(Severity severity, string message)
     {
         Logger.Log(severity, message);
+    }
+
+    public static void SetSeverity(int deviceId, Severity severity)
+    {
+        Logger.Devices[deviceId].MinimumSeverity = severity;
+    }
+
+    public static void SetSeverity(Severity severity)
+    {
+        foreach (var (_, device) in Logger.Devices)
+        {
+            device.MinimumSeverity = severity;
+        }
     }
 
     public static Logger Logger
