@@ -1,64 +1,7 @@
-﻿using System.Security.Cryptography;
+﻿using System.IO;
 using System.Threading.Tasks.Dataflow;
 
 namespace Logger;
-
-public enum Severity
-{
-    Verbose,
-    Debug,
-    Information,
-    Warning,
-    Error,
-    Fatal
-}
-
-public struct Message
-{
-    public Severity Severity;
-    public string Text;
-}
-
-public abstract class Device
-{
-    public Severity MinimumSeverity { get; set; } = Severity.Verbose;
-
-    public async Task Log(Message message)
-    {
-        if (message.Severity < MinimumSeverity)
-            return;
-        await LogInternal(message);
-    }
-
-    protected abstract Task LogInternal(Message message);
-}
-
-public class TextDevice(TextWriter writer) : Device
-{
-    /// <summary>
-    /// Specify the format string for the log message. The default is "{0} [{1}] {2}". Where
-    /// {0} is the date, {1} is the severity, and {2} is the message.
-    /// </summary>
-    public string FormatStr { get; set; } = "{0} [{1}] {2}";
-
-    private readonly TextWriter writer = writer;
-
-    protected override async Task LogInternal(Message messageData)
-    {
-        var message = messageData.Text;
-        var severity = messageData.Severity.ToString();
-        var date = DateTime.Now;
-        await writer.WriteLineAsync(string.Format(FormatStr, date, severity, message));
-    }
-}
-
-public class ConsoleDevice : TextDevice
-{
-    public ConsoleDevice()
-        : base(Console.Error) { }
-}
-
-public class FileDevice(string path) : TextDevice(new StreamWriter(path)) { }
 
 public class Logger
 {
@@ -83,11 +26,6 @@ public class Logger
         processThreadHandle = Task.Run(ProcessThread);
     }
 
-    ~Logger()
-    {
-        processThreadHandle.Wait();
-    }
-
     public readonly Dictionary<int, Device> Devices = [];
 
     private readonly BufferBlock<Message> messageQueue = new();
@@ -110,28 +48,46 @@ public class Logger
 
     public void Log(Severity severity, string message)
     {
-        messageQueue.Post(new Message { Severity = severity, Text = message });
+        messageQueue.Post(
+            new Message
+            {
+                Severity = severity,
+                Text = message,
+                Date = DateTime.Now
+            }
+        );
     }
 
     public int AddDevice(Device device)
     {
+        // This is not thread safe, in a more elaborate setup you can add a mutex here and
+        // also the ProcessThread when reading the devices.
         var id = nextDeviceId++;
         Devices.Add(id, device);
         return id;
     }
 
-    private async void ProcessThread()
+    /// <summary>
+    /// Wait until the message queue is empty and all the messages have been processed.
+    /// </summary>
+    public void WaitUntilEmpty()
     {
-        Console.WriteLine("Logger process thread started");
-        while (await messageQueue.OutputAvailableAsync())
+        messageQueue.Complete();
+        processThreadHandle.Wait();
+    }
+
+    private async Task ProcessThread()
+    {
+        while (await messageQueue.OutputAvailableAsync() || messageQueue.Count > 0)
         {
             var message = await messageQueue.ReceiveAsync();
             foreach (var (_, device) in Devices)
             {
+                // Send the message to the device that will handle it. 
+                // This can be a file, console, database, etc.
                 await device.Log(message);
             }
         }
-        Console.WriteLine("Logger process thread stopped");
     }
 }
 
@@ -163,6 +119,16 @@ public class Log
         {
             device.MinimumSeverity = severity;
         }
+    }
+
+    public static void AddDevice(Device device)
+    {
+        Logger.AddDevice(device);
+    }
+
+    public static void WaitUntilEmpty()
+    {
+        Logger.WaitUntilEmpty();
     }
 
     public static Logger Logger
